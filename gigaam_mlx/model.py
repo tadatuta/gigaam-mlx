@@ -5,6 +5,9 @@ from typing import List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
+from sentencepiece import SentencePieceProcessor
+
+from .types import Word
 
 
 # ── Rotary Positional Encoding ──────────────────────────────────
@@ -271,34 +274,37 @@ class GigaAMMLX(nn.Module):
         """Run conformer encoder. Input: (B, T, 64) mel spectrogram."""
         return self.encoder(features)
 
-    def decode(self, encoded: mx.array, seq_len: int) -> List[int]:
-        """Decode using the model's head (CTC or RNNT)."""
+    def decode(self, encoded: mx.array, seq_len: int) -> Tuple[List[int], List[int]]:
+        """Decode using the model's head (CTC or RNNT). Returns (token_ids, token_frames)."""
         if self.model_type == "ctc":
             return self._ctc_decode(encoded, seq_len)
         return self._rnnt_decode(encoded, seq_len)
 
-    def _ctc_decode(self, encoded: mx.array, seq_len: int) -> List[int]:
-        """CTC greedy decoding — fully vectorized."""
+    def _ctc_decode(self, encoded: mx.array, seq_len: int) -> Tuple[List[int], List[int]]:
+        """CTC greedy decoding — returns (token_ids, token_frames)."""
         log_probs = self.head(encoded)
         labels = mx.argmax(log_probs[0, :seq_len, :], axis=-1)
         mx.eval(labels)
 
         blank_id = self.num_classes - 1
-        token_ids = []
+        token_ids: List[int] = []
+        token_frames: List[int] = []
         prev = blank_id
-        for tok in labels.tolist():
+        for t, tok in enumerate(labels.tolist()):
             if tok != blank_id and tok != prev:
                 token_ids.append(tok)
+                token_frames.append(t)
             prev = tok
-        return token_ids
+        return token_ids, token_frames
 
     def _rnnt_decode(
         self, encoded: mx.array, seq_len: int, max_symbols: int = 10
-    ) -> List[int]:
-        """RNNT greedy decoding (sequential)."""
+    ) -> Tuple[List[int], List[int]]:
+        """RNNT greedy decoding — returns (token_ids, token_frames)."""
         enc = encoded[0]  # (C, T)
         blank_id = self.decoder.blank_id
         hyp: List[int] = []
+        token_frames: List[int] = []
         state: Optional[Tuple[mx.array, mx.array]] = None
         last_label: Optional[mx.array] = None
 
@@ -315,11 +321,45 @@ class GigaAMMLX(nn.Module):
                     not_blank = False
                 else:
                     hyp.append(int(k))
+                    token_frames.append(t)
                     state = new_state
                     last_label = mx.array([[hyp[-1]]])
                     symbols += 1
-        return hyp
+        return hyp, token_frames
+
+    def _decode(
+        self,
+        encoded: mx.array,
+        seq_len: int,
+        audio_length: int,
+        tokenizer: SentencePieceProcessor,
+        word_timestamps: bool = False,
+    ) -> Tuple[str, Optional[List[Word]]]:
+        """
+        Decode encoder output to text with optional word-level timestamps.
+
+        Args:
+            encoded: Encoder output tensor
+            seq_len: Length of encoded sequence
+            audio_length: Original audio length in samples
+            tokenizer: SentencePiece tokenizer
+            word_timestamps: Whether to compute word-level timestamps
+
+        Returns:
+            Tuple of (text, words) where words is None if word_timestamps=False
+        """
+        token_ids, token_frames = self.decode(encoded, seq_len)
+        text = tokenizer.decode(token_ids)
+
+        if not word_timestamps:
+            return text, None
+
+        from .timestamps_utils import compute_frame_shift, frames_to_words
+
+        frame_shift = compute_frame_shift(audio_length, seq_len)
+        words = frames_to_words(tokenizer, token_ids, token_frames, frame_shift)
+        return text, words
 
     # Keep backward compat
     def ctc_decode(self, encoded: mx.array, seq_len: int) -> List[int]:
-        return self._ctc_decode(encoded, seq_len)
+        return self._ctc_decode(encoded, seq_len)[0]

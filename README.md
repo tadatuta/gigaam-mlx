@@ -27,6 +27,13 @@ from gigaam_mlx import load_model, transcribe
 model, tokenizer = load_model()  # auto-downloads from HuggingFace
 text = transcribe(model, tokenizer, "meeting.wav")
 print(text)
+
+# With word-level timestamps
+from gigaam_mlx import TranscriptionResult
+
+result = transcribe(model, tokenizer, "meeting.wav", word_timestamps=True)
+for word in result.words:
+    print(f"{word.text}: {word.start:.2f}s -> {word.end:.2f}s")
 ```
 
 ## CLI
@@ -40,6 +47,9 @@ gigaam-mlx recording.mkv --model-type rnnt
 
 # Output subtitles
 gigaam-mlx call.wav --output-dir ./transcripts --format srt
+
+# Word-level timestamps
+gigaam-mlx meeting.wav --word-timestamps
 ```
 
 Outputs `.srt` (subtitles) and `.txt` (plain text). Model weights download automatically on first run.
@@ -78,6 +88,7 @@ model, tokenizer = load_model("rnnt")
 - **No PyTorch** — pure MLX + librosa + numpy
 - **Any format** — video and audio via ffmpeg (mkv, mp4, wav, mp3, ...)
 - **Auto-download** — model weights from HuggingFace Hub
+- **Word-level timestamps** — precise word start/end times with `word_timestamps=True`
 
 ## Requirements
 
@@ -100,6 +111,45 @@ Audio/Video → ffmpeg (16kHz mono) → Mel spectrogram (librosa)
 ```
 
 The model is a 220M parameter Conformer pretrained on 700,000 hours of Russian speech. The `v3_e2e_ctc` variant produces punctuated, normalized text directly — no language model or post-processing needed.
+
+## Word-level timestamps
+
+Each transcribed word includes precise start and end times (in seconds). Works with both CTC and RNNT models.
+
+```python
+from gigaam_mlx import load_model, transcribe_file
+
+model, tokenizer = load_model("ctc")
+result = transcribe_file("speech.wav", model=model, tokenizer=tokenizer, word_timestamps=True)
+
+# Segment-level access
+for segment in result.segments:
+    print(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
+    for word in segment.words:
+        print(f"  {word.text}: {word.start:.3f}s -> {word.end:.3f}s")
+
+# Flatten all words across segments
+for word in result.words:
+    print(f"{word.text}: {word.start:.2f}s -> {word.end:.2f}s")
+
+# Plain text (backward compatible)
+print(result.text)
+```
+
+### API
+
+| Function | Returns | Description |
+|---|---|---|
+| `transcribe(model, tokenizer, path)` | `str` | Plain text transcription |
+| `transcribe(model, tokenizer, path, word_timestamps=True)` | `TranscriptionResult` | Text + word list |
+| `transcribe_file(path, word_timestamps=True, ...)` | `LongformTranscriptionResult` | Segments with per-word times |
+
+### Data types
+
+- **`Word`** — `text: str`, `start: float`, `end: float`
+- **`TranscriptionResult`** — `text: str`, `words: Optional[List[Word]]`
+- **`Segment`** — `text: str`, `start: float`, `end: float`, `words: Optional[List[Word]]`
+- **`LongformTranscriptionResult`** — `segments: List[Segment]`, plus `.words` (flattened), `.text`, `.has_word_timestamps`
 
 ## Converting weights yourself
 

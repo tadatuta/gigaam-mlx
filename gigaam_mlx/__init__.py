@@ -3,6 +3,7 @@
 from .model import GigaAMMLX
 from .audio import load_audio, compute_mel
 from .transcribe import transcribe_file
+from .types import LongformTranscriptionResult, TranscriptionResult, Segment, Word
 
 __version__ = "0.1.0"
 
@@ -64,7 +65,9 @@ def load_model(model_type: str = "ctc", repo_id: str | None = None):
     return model, tokenizer
 
 
-def transcribe(model, tokenizer, audio_path: str) -> str:
+def transcribe(
+    model, tokenizer, audio_path: str, word_timestamps: bool = False
+) -> str | TranscriptionResult:
     """
     Transcribe an audio or video file.
 
@@ -72,9 +75,10 @@ def transcribe(model, tokenizer, audio_path: str) -> str:
         model: GigaAMMLX model instance
         tokenizer: SentencePiece tokenizer
         audio_path: Path to audio/video file (any format ffmpeg supports)
+        word_timestamps: Whether to compute word-level timestamps
 
     Returns:
-        Transcribed text
+        Transcribed text string, or TranscriptionResult if word_timestamps=True
     """
     import mlx.core as mx
     import numpy as np
@@ -85,5 +89,9 @@ def transcribe(model, tokenizer, audio_path: str) -> str:
 
     encoded, seq_len = model.encode(mel_mx)
     mx.eval(encoded)
-    token_ids = model.decode(encoded, seq_len)
-    return tokenizer.decode(token_ids)
+    text, words = model._decode(
+        encoded, seq_len, len(audio), tokenizer, word_timestamps
+    )
+    if word_timestamps:
+        return TranscriptionResult(text=text, words=words)
+    return text
